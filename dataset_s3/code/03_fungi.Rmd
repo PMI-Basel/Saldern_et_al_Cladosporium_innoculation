@@ -1,0 +1,566 @@
+---
+title: "03_fungi"
+author: "Loïc Thurre"
+date: "2024-09-19"
+output:
+  pdf_document: default
+header-includes: \usepackage{caption}
+knit: (function(inputFile, encoding) {
+  rmarkdown::render(inputFile, encoding = encoding, output_dir = "../output_files") })
+---
+
+\captionsetup[table]{labelformat=empty}
+
+
+```{r setup, include = FALSE}
+  knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+  library(phyloseq)
+  library(dplyr)
+  library(ggplot2)
+  #library(glmulti)
+  library(BiocManager)
+  library(Biostrings)
+  library(DECIPHER)
+  library(ggpubr)
+  library(tibble)
+  library(vegan)
+  library(randomForest)
+  library(psych)
+  library(olsrr)
+  library(relaimpo)
+  library(purrr)
+
+  # defining plotting theme. 
+  MS.theme <- theme(
+          axis.text = element_text(size = 15),
+          axis.title = element_text(size = 18),
+          legend.title = element_text(face = "bold", size = 18),
+          legend.text = element_text(size = 17),
+          )
+  
+  pdf.theme <- theme(
+          axis.text = element_text(size = 12),
+          axis.title = element_text(size = 14),
+          legend.title = element_text(face = "bold", size = 14),
+          legend.text = element_text(size = 13),
+  )
+  
+  set.seed(1968)
+```
+
+# 0. Data importation & functions loading
+In this step we create the phyloseq object that contains the following data: 
+  1. OTU counts
+  2. OTU Taxonomy
+  3. Design file
+  
+```{r data importation}
+  OTU <- read.csv(file = "../input_files/OTU97.csv", row.names = 1)
+  TAX <- readRDS(file = "../input_files/TAXA_unite2023.RDS")
+  SEQ <- read.table("../input_files/SEQ97.tab")
+  
+  # import soil and BRI data to create the pyhloseq object for further analysis
+  SAM <- read.csv(file = "../input_files/soil_bri.csv", row.names = 1)
+  
+  # creating phyloseq object to work with
+  mi13 <- phyloseq(otu_table(OTU, taxa_are_rows = F), sample_data(SAM), tax_table(as.matrix(TAX)))
+```
+
+```{r functions}
+  #This a function to map a sanger sequence to a set of OTU sequences
+  map <- function(OTU_df, sanger_trimmed, verbose=TRUE) {
+    #vector to save results
+    distances <- vector(length=nrow(OTU_df))
+    names(distances) <- OTU_df[,1]
+    #foor loop over each OTU
+    for (i in 1:nrow(OTU_df)) {
+      OTU_name <- OTU_df[i,1] #OTU name
+      OTU_seq <- OTU_df[i,2] #OTU seq 
+      seqs_to_map <- data.frame(seqs=c(as.character(OTU_seq), sanger_trimmed)) #create data.frame with OTU and sanger to map
+      seqs_to_map <- Biostrings::DNAStringSet(seqs_to_map$seqs) #convert to DNA string set
+      seqs_aln <- DECIPHER::AlignSeqs(seqs_to_map, processors = NULL, verbose = F) #align
+      dist_all <- DECIPHER::DistanceMatrix(seqs_aln, processors = NULL, verbose = F) #create distance table
+      distances[names(distances)==OTU_name] <- dist_all[1,2] #save distance
+      if(verbose==TRUE){if(i%%100==0 | i==nrow(OTU_df)){print(paste0(i,"/",nrow(OTU_df), " OTUs mapped"))}} #process state
+    }
+    similarities <- (1-distances)*100  #similarity table
+    similarities <- as.data.frame(similarities)
+    return(similarities)
+  }
+
+  #read and import fasta file
+  readDNA <- function(path){
+    #read
+    file <- read.table(path, header = F)
+    #extract headers
+    headers <- file[seq(1,nrow(file),by=2),]
+    headers <- gsub(">", "", headers)
+    #extract sequences
+    sequences <- file[seq(2,nrow(file),by=2),]
+    #if only one sequence, create named vector
+    if(length(sequences) == 1){
+      final_obj <- as.vector(sequences)
+      names(final_obj) <- headers
+    } else{
+      #if mulitple sequences, create df
+      final_obj <- data.frame(sequences=sequences)
+      rownames(final_obj) <- headers
+    }
+    return(final_obj)
+  }
+
+```
+
+
+
+# 0.1 OTU filtering and TSS scaling
+All (operational taxonomic units) OTUs that were not verified as fungi by the ITSx software (Bengtsson‐Palme et al., 2013) as well as those with a count of less than five across all samples were excluded from further analysis. 
+```{r data normalization, echo = FALSE, warning = FALSE}
+    # filter out non-fungal taxa from ITSx analysis
+  fungal_otus <- read.csv("../input_files/fungal_otus.csv", header = FALSE)
+  mi13 <- prune_taxa(fungal_otus$V1, mi13)
+  
+  mi13 <- prune_taxa(taxa_sums(mi13) >= 5, mi13) # thresholding to eliminate rare ASVs
+  
+  mi13.norm <- transform_sample_counts(mi13, function(x) (x/sum(x)*100))
+  save(mi13, file = "../output_files/mi13.rds")
+  save(mi13.norm, file = "../output_files/mi13_norm.rds")
+```
+# 1. Rarefaction analysis
+Rarefaction analysis confirmed that a sufficient sequencing depth had been reached to capture fungal diversity in most samples
+```{r rarefaction prep, include = FALSE}
+  rar <- as.matrix(otu_table(mi13))
+  class(rar) = "matrix"
+  
+  design <- sample_data(mi13)
+  
+  rarefaction_data <- rarecurve(rar, step=200, 7000, label = FALSE) 
+  names(rarefaction_data) <- rownames(design)
+```
+
+
+```{r rarefaction, fig.width = 5, fig.height = 4, fig.align='center'}
+  # long-transformation.
+  protox <- mapply(FUN = function(x, y) {
+    mydf <- as.data.frame(x)
+    colnames(mydf) <- "value"
+    mydf$species <- y
+    mydf$subsample <- attr(x, "Subsample")
+    mydf
+  }, x = rarefaction_data, y = as.list(names(rarefaction_data)), SIMPLIFY = FALSE)
+  
+  rarefaction_data_long <- do.call(rbind, protox)
+  rownames(rarefaction_data_long) <- NULL  # pretty
+  
+  rareplot <- ggplot(rarefaction_data_long, aes(x = subsample, y = value, group = species, color = species)) +
+    theme_bw() +
+    geom_line() +
+    xlab("Sequencing Depth") +
+    scale_x_continuous(limits = c(0, 35000)) +
+    ylab("Number of OTUs") +
+    theme(legend.position = "right") +
+    labs(color = "Soil ID") +
+    MS.theme
+  
+  rareplot.pdf <- ggplot(rarefaction_data_long, aes(x = subsample, y = value, group = species, color = species)) +
+    theme_bw() +
+    geom_line() +
+    xlab("Sequencing Depth") +
+    scale_x_continuous(limits = c(0, 35000)) +
+    ylab("Number of OTUs") +
+    pdf.theme +
+    theme(legend.position = "right") +
+    labs(color = "Soil ID")
+  
+  plot(rareplot.pdf)
+  
+    
+  ggsave(file = "../output_files/rarefaction.png",
+       plot = rareplot,
+       dpi = 300,
+       width = 10,
+       height = 6)
+```
+
+# 2. Mapping the inoculum with native soil fungi.
+First, we asked if we could find the inoculated C. tenuissimum or closely related sequences in the tested soils. 
+
+## 2.1 C. tenuissimum sanger sequence
+```{r C. tenuissimum sequence}
+  sanger_seq <- readDNA("../input_files/cladosporium_sanger.fasta") #import sanger sequence
+```
+
+
+## 2.2 Sequence mapping with soil fungal OTUs present in the soils before inoculation.
+```{r mapping C. tenuissimum}
+   #run mapping (takes a while)
+  similarities <- map(SEQ[-1,], sanger_seq, verbose = FALSE)
+  OTUofinterest <- rownames(similarities)[which(similarities==max(similarities))][1]
+  sim <- max(similarities)
+  sim <- round(sim, 2)
+
+  paste0("Cladosporium mapped to: ", OTUofinterest, " with a similarity of: ", sim, "%")
+```
+
+## 2.3 Figure S6A
+The abundance of OTU13 ranged from absent to 9.3% relative abundance with presences >1% in ca. 1/4 and <1% in ca. 3/4 of the soils.
+```{r figure S6A, fig.width = 5, fig.height= 3, fig.align='center'}
+  otus <- data.frame(otu_table(mi13.norm)) %>% 
+    dplyr::select(OTU13) %>% 
+    rownames_to_column("field") %>%
+    plyr::arrange(-OTU13)
+
+  otus$field <- factor(otus$field, levels = otus$field)
+  
+  # plotting the abundance of C. tenuissimum per field. 
+  fig.S6A <- ggplot(otus, aes(x = field, y = OTU13)) +
+    geom_col(color = "#581845", fill = "#581845") +
+    xlab("Field") + ylab("OTU13 relative abundance (%)") +
+    scale_y_continuous(expand = c(0,0), limits = c(0, 11)) +
+    theme_bw() +
+    MS.theme +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+    )
+  
+    ggsave(file = "../output_files/figure_S6A.png", 
+       plot = fig.S6A, 
+       dpi = 300,
+       width = 7,
+       height = 6)
+```
+
+```{r figure S6A for PDF, fig.height = 4, fig.width = 5, fig.align='center'}
+  # plotting the abundance of C. tenuissimum per field. 
+  fig.S6A.pdf <- ggplot(otus, aes(x = field, y = OTU13)) +
+    geom_col(color = "#581845", fill = "#581845") +
+    xlab("Field") + ylab("OTU13 relative abundance (%)") +
+    scale_y_continuous(expand = c(0,0), limits = c(0, 11)) +
+    theme_bw() +
+    pdf.theme +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+    )
+  
+  plot(fig.S6A.pdf)
+```
+
+## 2.4 Figure S6B
+OTU13 abundance did not correlate with soil fertility
+```{r figure S6B}
+  # get soil fertility values
+  load("../input_files/means_and_se_unfertilised.rda")
+  
+  fertility.otu13 <- merge(otus %>% column_to_rownames("field"), means_and_se_U %>% column_to_rownames("soil_ID"), by = 0)
+
+   fig.S6B <- ggscatter(fertility.otu13, x = "C", y = "OTU13", 
+                      label = "Row.names", 
+                      cor.coef = TRUE, 
+                      cor.coef.size = 6, 
+                      cor.method = "spearman",
+                      add = "reg.line", 
+                      repel = T,
+                      font.label = c(16, "plain"),
+                      point = FALSE,
+                      cor.coef.coord = c(800, 8.5),
+                      size = 5) +
+                      xlab("Soil fertility (mg)") + ylab("OTU13 (%)") +
+                      MS.theme
+   
+    ggsave(file = "../output_files/figure_S6B.png",
+       plot = fig.S6B,
+       dpi = 300,
+       width = 7,
+       height = 6)
+```
+
+
+```{r fig S6B pdf, fig.width = 5, fig.height = 4, fig.align='center'}
+  fig.S6B <- ggscatter(fertility.otu13, x = "C", y = "OTU13", 
+                      label = "Row.names", 
+                      cor.coef = TRUE, 
+                      cor.coef.size = 4, 
+                      cor.method = "spearman",
+                      add = "reg.line", 
+                      repel = T,
+                      font.label = c(14, "plain"),
+                      point = FALSE,
+                      cor.coef.coord = c(800, 8.5),
+                      size = 3) +
+                      xlab("Soil fertility (mg)") + ylab("OTU13 (%)") +
+                      pdf.theme
+  plot(fig.S6B)
+```
+
+## 2.5 Figure S6C
+OTU13 abundance did not correlate with BRI
+```{r figure S6C}
+  BRI <- data.frame(sample_data(mi13.norm)) %>% dplyr::select(BRI)
+
+  BRI.otu13 <- merge(otus %>% column_to_rownames("field"), BRI, by = 0)
+  
+   fig.S6C <- ggscatter(BRI.otu13, x = "BRI", y = "OTU13", 
+                      label = "Row.names", 
+                      cor.coef = TRUE, 
+                      cor.coef.size = 6, 
+                      cor.method = "spearman",
+                      add = "reg.line", 
+                      repel = T,
+                      font.label = c(16, "plain"),
+                      point = FALSE,
+                      cor.coef.coord = c(-3, 8.5),
+                      size = 5) +
+                      xlab("BRI (%)") + 
+                      MS.theme
+   
+    ggsave(file = "../output_files/figure_S6C.png",
+       plot = fig.S6C,
+       dpi = 300,
+       width = 7,
+       height = 6)
+```
+
+```{r figure S6C pdf, fig.width = 5, fig.height = 4, fig.align='center'}
+   fig.S6C.pdf <- ggscatter(BRI.otu13, x = "BRI", y = "OTU13", 
+                      label = "Row.names", 
+                      cor.coef = TRUE, 
+                      cor.coef.size = 4, 
+                      cor.method = "spearman",
+                      add = "reg.line", 
+                      repel = T,
+                      font.label = c(14, "plain"),
+                      point = FALSE,
+                      cor.coef.coord = c(-10, 6),
+                      size = 3) +
+                      xlab("BRI (%)") + 
+                      pdf.theme
+
+  plot(fig.S6C.pdf)
+```
+
+
+
+# 3. PCoA with all soil fungal OTUs
+```{r PCoA bray-curtis}
+  # apply sqrt transformation to OTU count data
+  mi13.sqrt <- mi13.norm
+  otu_table(mi13.sqrt) <- sqrt(otu_table(mi13.norm))
+  sample_data(mi13.sqrt) <- data.frame(sample_data(mi13.sqrt)) %>% mutate(Sample = rownames(.))
+  pcoa <- ordinate(mi13.sqrt, method = "PCoA", distance = "bray")
+```
+
+## 3.1 Figure 4A
+We examined the relationship between soil fungal community composition and BRI using Principal Coordinate Analysis (PCoA), which revealed no clustering of fungal communities with the degree of BRI 
+
+```{r figure 4A}
+  # necessary to get the data
+   x <-  plot_ordination(mi13.sqrt, pcoa, color = "Estimate", label = "Sample", type = "species") 
+   otus.to.keep <- c("OTU110", "OTU576", "OTU25","OTU2203", "OTU97")
+   otu.data <- x$data %>% dplyr::filter(rownames(.) %in% otus.to.keep)
+   
+  
+  pcoa.samples <- data.frame(pcoa$vectors) %>% 
+    dplyr::select(Axis.1, Axis.2)
+  BRI <- data.frame(sample_data(mi13.sqrt)) %>% dplyr::select(BRI)
+  colnames(BRI) = "BRI (%)"
+  
+  pcoa.samples <- merge(pcoa.samples, BRI, by = 0)
+  
+  figure.4A <- ggplot(pcoa.samples, aes( x = Axis.1, y = Axis.2)) +
+    geom_text(aes(label = Row.names, color = `BRI (%)`), size = 7) +
+    geom_text(data = otu.data, aes(x = Axis.1, y = Axis.2, label = rownames(otu.data)), size = 7) +
+    xlab("Axis 1 (10.7%)") + ylab("Axis 2 (6.4%)") +
+    scale_color_gradient( low = "#0f5dc1", high = "#2dfa88") +
+    theme_bw() +
+    MS.theme
+   
+  ggsave(figure.4A, file = "../output_files/figure_4A.png", width = 8, height = 7, dpi = 300)
+```
+
+```{r figure 4A pdf, fig.width = 5, fig.height = 4, fig.align='center'}
+    figure.4A.pdf <- ggplot(pcoa.samples, aes( x = Axis.1, y = Axis.2)) +
+        geom_text(aes(label = Row.names, color = `BRI (%)`), size = 4) +
+        geom_text(data = otu.data, aes(x = Axis.1, y = Axis.2, label = rownames(otu.data)), size = 4) +
+        xlab("Axis 1 (10.7%)") + ylab("Axis 2 (6.4%)") +
+        scale_color_gradient( low = "#0f5dc1", high = "#2dfa88") +
+        theme_bw() +
+        pdf.theme
+   
+plot(figure.4A.pdf)
+```
+
+
+## 3.2 PERMANOVA
+```{r PERMANOVA}
+   # compute distance matrix
+  otus.sqrt <- data.frame(otu_table(mi13.sqrt))
+  
+  distance_matrix <- vegdist(otus.sqrt, method = "bray")
+  
+  # Compute permanova with continuous variable
+  # permanova.fertility <- adonis2(distance_matrix ~ as.numeric(fertility.soil$C))
+  permanova.bri <- adonis2(distance_matrix ~ BRI$`BRI (%)`)
+  
+  # permanova.fertility
+  print(permanova.bri)
+```
+
+## 3.3 Table S7
+This was supported by permutational multivariate analysis of variance (PERMANOVA), which confirmed no significant relationship between BRI and soil fungal community composition
+```{r table S7}
+  knitr::kable(permanova.bri, caption = "Table S7", label = NA)
+```
+
+
+
+# 4. Pairwise correlation BRI ~ soil fungi 
+After p-value adjustment, none of the Spearman pariwise correlation is significant.
+
+```{r pairwise correlation, fig.width = 4, fig.height = 4, fig.align='center'}
+  # Prepare the dataframe for downstream analysis
+  BRI <- data.frame(sample_data(mi13.norm)) %>% dplyr::select(BRI)
+  otus <- data.frame(otu_table(mi13.norm))
+  BRI_otus1 <- merge(BRI, otus, by = 0) %>% column_to_rownames("Row.names")
+  
+  pairwise.bri.otus <- corr.test(BRI_otus1[,-1], BRI_otus1$BRI, adjust = "bonferroni", method = "spearman")
+  
+  hist.pvalue <- ggplot(data.frame(pairwise.bri.otus$p.adj), aes( x = pairwise.bri.otus.p.adj)) +
+    geom_histogram() + xlab("Adjusted p-value") + ggtitle("Distribution of adj. p-values") +
+    theme_bw()
+    
+  plot(hist.pvalue)
+```
+
+
+# 5.  Random Forest feature selection
+As with the analysis of physicochemical soil parameters, we reduced the number of soil fungal taxa for further analysis (identification of OTUs predictive for BRI using Random Forest.
+
+```{r Random Foret feature selection}
+    set.seed(1968) # for reproducible result
+    rf.asv <- randomForest(BRI ~., 
+               corr.bias = T,
+               importance = T,
+               ntree = 1000,
+               data = BRI_otus1)
+  
+  imp.asv <- importance(rf.asv)
+  imp.asv <- data.frame(imp.asv) %>% filter(IncNodePurity > 0) %>% dplyr::arrange(-IncNodePurity) 
+  # varImpPlot(rf.asv, n.var = 20)
+  save(BRI_otus1, file = "../input_files/BRI_otus.rda")
+```
+
+## 5.1 Table S8
+```{r Table S8}
+knitr::kable(TAX[rownames(imp.asv)[1:20],], caption = "Table S8", label = NA)
+```
+
+# 6. Glmulti for feature selection
+Again, we screened for the best OLS model based on reduced sets of soil fungi
+```{r exhaustive screening of candidate models}
+  # importing the data from the sciCORE
+  load(file = "../input_files/otus_glm.rda")
+
+  summary(otus.glm@objects[[1]])
+  otus.model <- lm(as.formula(summary(otus.glm)$bestmodel), data = BRI_otus1) # running the model with the best coefficients previously found
+```
+
+## 6.1 Normality assumptions
+Assessing the residuals normality assumptions the produced model. 
+The best model is not fully respecting the residuals normality assumptions. 
+These values are aggregated into the Table S5 for each model. 
+```{r normality assumptions}
+  norm.otus <- ols_test_normality(otus.model)
+  print(norm.otus)
+```
+
+## 6.2 Predictor relative importance
+The relative importance of each predictor in the previously selected model is computed in this step. These values are then used to complete the figure 4B in illustrator. 
+
+```{r best model relative importance}
+  otus.relimp <- calc.relimp(otus.model)
+  otus.relimp <- data.frame(otus.relimp@lmg)
+  colnames(otus.relimp) = "lmg"
+```
+
+## 6.3 Table S9
+Summary of the model coefficients and relative importance.
+```{r Table S9}
+  # merge tables so we see the coefficient and relative importance
+  otus.coefs <- data.frame(coef(otus.model))
+  table.s9 <- merge(otus.coefs, otus.relimp, by = 0, all = TRUE)
+  table.s9 <-  table.s9 %>% arrange(lmg)
+  colnames(table.s9) = c("Parameter", "Coefficient", "Relative importance")
+  
+  knitr::kable(table.s9, caption = "Table S9", label = NA)
+```
+
+
+## 6.4 Figure 4B
+```{r Figure 4B}
+  # stacked barplot fungal model
+  # preparing dataframe for plotting
+    fungi.relimp <- otus.relimp %>% tibble::rownames_to_column("Parameter") %>% 
+    mutate(type = ifelse(grepl("OTU", Parameter), "Fungi", "Soil")) %>%
+    mutate(model = "Fungi")
+
+  fungi.relimp$lmg <- as.numeric(fungi.relimp$lmg)
+  # adding unexplained variance value
+  fungi.relimp <- rbind(fungi.relimp, c("Unexplained", 1-sum(fungi.relimp$lmg), "-", "Fungi")) 
+  fungi.relimp$lmg <- as.numeric(fungi.relimp$lmg)
+  
+  fungi.relimp <- fungi.relimp %>% 
+    group_by(type) %>% 
+    arrange(-lmg, .by_group = TRUE) %>% 
+    map_df(rev) %>% 
+    mutate(added_lmg = cumsum(lmg)) %>% 
+    map_df(rev)
+  
+  fungi.relimp$Parameter <- factor(fungi.relimp$Parameter, levels = fungi.relimp$Parameter)
+  
+  fungi.plot <- ggplot(fungi.relimp, aes(x = model, y = round(lmg * 100, 2) , fill = Parameter)) +
+    geom_col(color = "black", width = 0.25) +
+    scale_fill_manual(values = c("white","#0F3045", "#19506F", "#236F9A", "#4086AD", "#5F9BBC")) +
+    ylab("% Variance explained") +
+    theme_void() +
+    theme(
+      legend.position = "none"
+    )
+  
+  ggsave(fungi.plot, file = "../output_files/figure_4B.png", width = 8, height = 7, dpi = 300)
+```
+
+
+```{r fungi plof PDF version, fig.width = 5, fig.height = 3, fig.align='center'}
+  fungi.plot.pdf <- ggplot(fungi.relimp, aes(x = model, y = round(lmg * 100, 2) , fill = Parameter)) +
+      geom_col(color = "black", width = 0.25) +
+      scale_fill_manual(values = c("white","#0F3045", "#19506F", "#236F9A", "#4086AD", "#5F9BBC")) +
+      ylab("% Variance explained") +
+      pdf.theme +
+      theme_void() +
+      theme(
+        legend.position = "none"
+      ) 
+
+  plot(fungi.plot.pdf)
+```
+
+
+# 7. Similarity between OTU110 (Cladosporium selected by the model) and OTU13 C. tenuissimum
+```{r OTU110 and OTU13 identity}
+
+      # Getting the sequences
+      otu.110.seq <- SEQ[111,2]
+      otu.13.seq <- SEQ[14,2]
+      seqs.to.align <- rbind(otu.110.seq, otu.13.seq)
+      
+      seqs.to.align <- Biostrings::DNAStringSet(seqs.to.align)
+      seqs_aln <- DECIPHER::AlignSeqs(seqs.to.align, processors = NULL, verbose = F) #align
+      dist_all <- DECIPHER::DistanceMatrix(seqs_aln, processors = NULL, verbose = F) #create distance table
+      
+      similarity <- 1 - dist_all[1,2] #save distance
+      paste0("Cladosporium (OTU110) and Cladosporium (OTU13) sequences share a similarity of: ", round(similarity * 100,2), "%")
+```
+
+
+
+

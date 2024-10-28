@@ -1,0 +1,253 @@
+---
+title: "05_model_validation"
+author: "Loïc Thurre"
+date: "2024-09-29"
+output:
+  pdf_document: default
+header-includes: \usepackage{caption}
+knit: (function(inputFile, encoding) {
+  rmarkdown::render(inputFile, encoding = encoding, output_dir = "../output_files") })
+---
+
+\captionsetup[table]{labelformat=empty}
+
+
+```{r setup, include = FALSE}
+  knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+
+  library(dplyr)  
+  library(ggplot2)
+  library(ggpubr)
+  library(stringr)
+  library(tidyr)
+
+
+      # defining plotting theme. 
+  MS.theme <- theme(
+          axis.text = element_text(size = 15),
+          axis.title = element_text(size = 18),
+          legend.title = element_text(face = "bold", size = 18),
+          legend.text = element_text(size = 17),
+          )
+  
+  pdf.theme <- theme(
+          axis.text = element_text(size = 12),
+          axis.title = element_text(size = 14),
+          legend.title = element_text(face = "bold", size = 14),
+          legend.text = element_text(size = 13),
+  )
+  
+ 
+```
+
+# 0. Data Importation
+
+```{r data importation}
+  predictions <- read.csv(file = "../input_files/predictions.csv")
+  predictions[] <- lapply(predictions, function(x) gsub("\u00A0", "", x))  # Remove non-breaking spaces
+  predictions[] <- lapply(predictions, as.numeric) # transform to numeric
+  
+  
+  best_predictors <- read.csv(file = "../input_files/best_predictors.csv", header = FALSE)
+  
+  predictions <- cbind(predictions, best_predictors[,1])
+  colnames(predictions) = c("Observed", "Predicted", "Field")
+  predictions$Field <- gsub("\u00A0", "", predictions$Field)
+  
+  # add BRI data to the dataframe
+  soil.bri <- read.csv(file = "../input_files/soil_bri.csv") %>% dplyr::select(c(X, BRI))
+  colnames(soil.bri)[1] = "Field"
+  
+  predictions <- merge(soil.bri, predictions, by = "Field")
+  
+  load(file = "../input_files/combined_data.rda")
+```
+# 1. DENOVO leave one out validation 
+We computed the LOO validation on the whole approach, the following steps were executed on the N-1 dataset
+  1. Splitting between train (N-1) and test set (Nth)
+  2. Feature selection 
+  3. Best physicochemical model
+  4. Best soil fungi model 
+  5. Best combined model 
+  6. Predictions and comparison with the Nth test site. 
+  
+This script was executed on the sciCORE and is available in dataset S5 "loo_validation.R". 
+We report here the results and produce the corresponding graphs. 
+
+## 1.1 Predictors stability
+Selection frequency of predictors during DENOVO LOO selection. 
+Counting the number of time a predictor is selected by our approach to compare with what was previously found in dataset S4. 
+```{r predictor frequence, echo = FALSE}
+  best_predictors[] <- lapply(best_predictors, function(x) gsub("\u00A0", "", x))
+  best_predictors$V2 <- str_trim(best_predictors$V2)
+  best_predictors$V2 <- str_split(best_predictors$V2, "\\+")
+  colnames(best_predictors) = c("Field", "Predictor")
+  best_predictors <- unnest(best_predictors, Predictor)
+  
+  best_predictors$Predictor <- factor(best_predictors$Predictor, unique(best_predictors$Predictor))
+  
+  predictor_count <- best_predictors %>% count(Predictor) %>%
+    arrange(-n)
+```
+
+## 1.1 Figure S6A
+
+```{r frequency of predictors}
+  relative.predictors <- predictor_count %>% mutate(n = n / nrow(predictions) * 100)
+
+  final.model.pred <- c("WHC", "Corg", "OTU576", "OTU110", "OTU2203", "OTU25")
+
+  fig.6A <- ggplot(relative.predictors, aes(x = reorder(Predictor, n), y = n)) +
+    geom_segment(aes(xend=Predictor, 
+                     yend=0, 
+                     linetype = ifelse(relative.predictors$Predictor %in% final.model.pred, "dashed","solid"))) +
+    ylab("Selection frequency (%)")+ xlab("Predictor") +
+    geom_point( size=2, color="black") +
+    theme_bw() +
+    MS.theme +
+    theme(
+      legend.position = "none",
+      plot.margin = unit(c(0,1,0,0), "cm")
+    ) +
+    coord_flip() 
+  
+  ggsave(file = "../output_files/figure_S6A.png", plot = fig.6A, width = 6.5, height = 8)
+```
+
+```{r figure 6A for pdf, fig.height=8, fig.width = 5}
+  fig.6A.pdf <- ggplot(relative.predictors, aes(x = reorder(Predictor, n), y = n)) +
+    geom_segment(aes(xend=Predictor, 
+                     yend=0, 
+                     linetype = ifelse(relative.predictors$Predictor %in% final.model.pred, "dashed","solid"))) +
+    ylab("Selection frequency (%)")+ xlab("Predictor") +
+    geom_point( size=2, color="black") +
+    theme_bw() +
+    pdf.theme +
+    theme(
+      legend.position = "none",
+      plot.margin = unit(c(0,1,0,0), "cm")
+    ) +
+    coord_flip() 
+
+  plot(fig.6A.pdf)
+```
+
+## 1.2 Figure S6C
+Results of predictions with DENOVO parameters after leave one out validation
+
+```{r Figure 6C}
+  fig.6C <- ggscatter(predictions, x = "Observed", y = "Predicted", label = "Field",
+            color = "BRI",
+            cor.method = "pearson",
+            cor.coef = TRUE,
+            cor.coef.size = 5,
+            point = FALSE,
+            font.label = 14,
+            repel = T) +
+            MS.theme +
+  scale_color_gradient( low = "#0f5dc1", high = "#2dfa88", name = "BRI (%)") +
+  theme(
+    legend.position = 'right'
+  )
+
+  ggsave("../output_files/figure_S6C.png", plot = fig.6C, width = 6, height = 4.5, dpi = 300)
+```
+
+
+```{r figure 6C for pdf, fig.width=5, fig.height=4}
+ # color this labels with BRI !
+  fig.6C.pdf <- ggscatter(predictions, x = "Observed", y = "Predicted", label = "Field",
+            color = "BRI",
+            cor.method = "pearson",
+            cor.coef = TRUE,
+            cor.coef.size = 5,
+            point = FALSE,
+            font.label = 14,
+            repel = T) +
+            pdf.theme +
+  scale_color_gradient( low = "#0f5dc1", high = "#2dfa88", name = "BRI (%)") +
+  theme(
+    legend.position = 'right'
+  )
+
+  plot(fig.6C.pdf)
+```
+
+# 2. LOO with selected predictors
+Leave one out validation on a model using the previously selected predictors from the combined model: 
+WHC, Corg, OTU576, OTU2203, OTU110, OTU25
+
+```{r modelling with selected predictors}
+  sel.pred <- data.frame(matrix(ncol = 2))
+
+  for(i in 1:nrow(combined_data)) {
+    # split data in training and test sets
+    trainData <- combined_data[-i,]
+    testData <- combined_data[i,]
+    
+    # compute model 
+    temp.model <- lm(BRI ~ WHC + OTU576 + Corg + OTU2203 + OTU110 + OTU25, data = trainData)
+    
+    # make prediction
+    pred <- predict(temp.model, newdata = testData)
+    
+    # store prediction in df
+    sel.pred[i,] = c(testData$BRI, pred)
+  }
+
+  colnames(sel.pred) = c("Observed", "Predicted")
+  
+  # add field
+  sel.pred <- sel.pred %>% mutate(Field = rownames(combined_data))
+  
+```
+
+
+
+## 2.1 Figure S5B
+Results of predictions after LOO validation with selected predictors. 
+
+```{r figure 5B}
+    # color this labels with BRI !
+  fig.5b <- ggscatter(sel.pred, x = "Observed", y = "Predicted", label = "Field",
+            color = "Observed",
+            cor.method = "pearson",
+            cor.coef = TRUE,
+            cor.coef.size = 5,
+            point = FALSE,
+            font.label = 14,
+            repel = T) +
+            MS.theme +
+  scale_color_gradient( low = "#0f5dc1", high = "#2dfa88", name = "BRI (%)") +
+  theme(
+    legend.position = 'right'
+  )
+
+  ggsave("../output_files/figure_S6B.png", plot = fig.5b, width = 6, height = 4.5, dpi = 300)
+```
+
+
+```{r figure 5B for PDF, fig.width=5, fig.height=4}
+    # color this labels with BRI !
+  fig.5b.pdf <- ggscatter(sel.pred, x = "Observed", y = "Predicted", label = "Field",
+            color = "Observed",
+            cor.method = "pearson",
+            cor.coef = TRUE,
+            cor.coef.size = 5,
+            cor.coef.coord = c(-40, 10),
+            point = FALSE,
+            font.label = 14,
+            repel = T) +
+            pdf.theme +
+  scale_color_gradient( low = "#0f5dc1", high = "#2dfa88", name = "BRI (%)") +
+  theme(
+    legend.position = 'right'
+  )
+
+  plot(fig.5b.pdf)
+```
+  
+
+
+
+

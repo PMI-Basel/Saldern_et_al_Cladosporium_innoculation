@@ -1,0 +1,284 @@
+---
+title: "02_Soil"
+author: "Loïc Thurre"
+date: "2024-09-17"
+output:
+  pdf_document: default
+header-includes: \usepackage{caption}
+knit: (function(inputFile, encoding) {
+  rmarkdown::render(inputFile, encoding = encoding, output_dir = "../output_files") })
+---
+
+\captionsetup[table]{labelformat=empty}
+
+
+```{r setup, include = FALSE}
+  knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+
+  library(ggplot2)
+  library(dplyr)
+  library(glmulti)
+  library(ggfortify)
+  library(tibble)
+  library(openxlsx)
+  library(psych)
+  library(svglite)
+  library(reshape2)
+  library(relaimpo)
+  library(olsrr)
+  library(purrr)
+
+  # defining plotting theme. 
+  MS.theme <- theme(
+          axis.text = element_text(size = 15),
+          axis.title = element_text(size = 18),
+          legend.title = element_text(face = "bold", size = 18),
+          legend.text = element_text(size = 17),
+          )
+  
+  pdf.theme <- theme(
+          axis.text = element_text(size = 12),
+          axis.title = element_text(size = 14),
+          legend.title = element_text(face = "bold", size = 14),
+          legend.text = element_text(size = 13),
+  )
+```
+
+# 0. Data importation
+```{r data importation}
+    # Importing soil parameters
+    SOIL <- read.xlsx(xlsxFile = "../input_files/soil_parameters.xlsx", 
+                     sheet = 1)  %>% column_to_rownames("soil_ID")
+
+    # importing unfertilised BRI data from S1
+    BRI.unfert <- read.csv(file = "../input_files/BRI_unfertilised.csv") %>%
+      mutate(field = gsub("soil_ID", "", new_field)) %>% tibble::column_to_rownames("field") %>% dplyr::select(Estimate)
+    
+    # merging BRI and soil tables
+    masterTable <- merge(BRI.unfert, SOIL, by = 0) %>% column_to_rownames("Row.names")
+    colnames(masterTable)[1] = "BRI" # renaming Estimate into BRI
+    
+    write.csv(masterTable, file = "../output_files/soil_bri.csv")
+```
+
+# 1. Principal coordinate analysis (PCA)
+First, we performed a principal component analysis (PCA) to reveal relationships between the assessed physicochemical parameters across the 25 soils 
+# 1.1 Computing PCA
+```{r soil PCA}
+  soil.pca <- prcomp(masterTable[, -1], scale. = TRUE, center = TRUE)
+  summary(soil.pca)
+```
+
+
+
+## 1.2 Figure 3A
+To obtain insights on the relationship of soil parameters and BRI, we coloured the soils in the PCA based on the BRI of wheat growth on these soils
+```{r fig.3A}
+  fig.3A <- autoplot(soil.pca, data = masterTable, 
+           colour = "BRI", 
+           loadings = TRUE, 
+           loadings.label = TRUE,
+           loadings.color = "darkgray",
+           loadings.label.color = "darkgray",
+           loadings.label.size = 6,
+           label = TRUE,
+           label.size = 7,
+           shape = FALSE) + 
+    scale_color_gradient( low = "#0f5dc1", high = "#2dfa88", name = "BRI (%)") +
+    theme_bw() +
+    MS.theme
+
+    ggsave(fig.3A, file = "../output_files/figure_3A.svg", width = 8, height = 6, dpi = 300) # saving as SVG for subsequent modification with illustrator
+```
+
+```{r fig.3A for pdf, fig.width = 7, fig.height = 4}
+  fig.3A.pdf <- autoplot(soil.pca, data = masterTable, 
+           colour = "BRI", 
+           loadings = TRUE, 
+           loadings.label = TRUE,
+           loadings.color = "darkgray",
+           loadings.label.color = "darkgray",
+           loadings.label.size = 4,
+           label = TRUE,
+           label.size = 5,
+           shape = FALSE) + 
+    scale_color_gradient( low = "#0f5dc1", high = "#2dfa88", name = "BRI (%)") +
+    theme_bw() +
+    pdf.theme
+
+    plot(fig.3A.pdf)
+```
+
+
+## 1.3 ANOVA 
+Formula: BRI ~ soil_variables
+```{r ANOVA BRI ~ soil_variables}
+  shapiro.test(masterTable$BRI)
+  
+  soil.anova <- aov(BRI ~ Humus+Clay+Silt+Sand+pH+P_H2O+K_H2O+Mg_H2O+Ca_H2O+Nitrate+P_AAE+K_AAE+Mg_AAE+Ca_AAE+Cu+Fe+Mn+B+WHC+Corg+SOM+Nmin+CEC, masterTable)
+```
+
+## Table S3? 
+```{r table S3}
+  knitr::kable(anova(soil.anova), caption = "Table S3", label = NA)
+```
+
+
+# 2. Pairwise correlation BRI ~ soil_variable
+Next, we assessed pairwise correlations between the physicochemical soil parameters and BRI. 
+```{r co-correlation between variables}
+  bri.soil.corr <- corr.test(masterTable$BRI, masterTable, use = "pairwise", method = "spearman", adjust = "bonferroni")
+```
+
+## Table S4
+```{r table S4}
+  table.s4 <- cbind(t(bri.soil.corr$r), t(bri.soil.corr$p), t(bri.soil.corr$p.adj))
+  colnames(table.s4) = c("Spearman coefficient", "P-value", "Adjusted P-value")
+  knitr::kable(table.s4[-1,], caption = "Table S4", label = NA)
+```
+
+
+# 2. Removal of co-correlated predictors
+We reduced the sets of parameters (removal of co-correlated variables). We exclude the co-correlated predictors (|r| > 0.8).
+```{r co-correlation soil predictors, echo = FALSE}
+  soil.corr <- corr.test(SOIL, method = "spearman", adjust = "bonferroni")
+  corr.matrix <- soil.corr$r
+  corr.matrix[upper.tri(corr.matrix, diag = TRUE)] = NA
+  temp <- melt(corr.matrix, na.rm = TRUE)
+
+  soil.corr <- cbind(temp, soil.corr$p.adj)
+  excluded <- c("Silt", "Nitrate", "SOM")
+  
+  soil_selected <- SOIL %>% dplyr::select(!excluded)
+```
+
+## 2.1 Figure S5
+```{r figure S5}
+  figure.s5 <- ggplot(soil.corr, aes( x = Var1, y = Var2, fill = value)) +
+    geom_tile() +
+    theme_bw() +
+    scale_fill_gradient2(low = "red", mid="white", high="blue") +
+    MS.theme +
+    theme(
+      axis.text.x = element_text(angle = 90,
+                                 face = ifelse(soil.corr$Var1 %in% excluded, "plain", "bold")),
+      axis.title = element_blank(),
+      legend.title = element_blank()
+    )
+  ggsave(file = "../output_files/figure_s5.png",
+       plot = figure.s5,
+       dpi = 300,
+       width = 10,
+       height = 9)
+```
+
+```{r figure S5 for PDF}
+  figure.s5.pdf <- ggplot(soil.corr, aes( x = Var1, y = Var2, fill = value)) +
+    geom_tile() +
+    theme_bw() +
+    scale_fill_gradient2(low = "red", mid="white", high="blue") +
+    pdf.theme +
+    theme(
+      axis.text.x = element_text(angle = 90,
+                                 face = ifelse(soil.corr$Var1 %in% excluded, "plain", "bold")),
+      axis.title = element_blank(),
+      legend.title = element_blank()
+    )
+
+  plot(figure.s5.pdf)
+```
+
+# 3. Exhaustive screening of candidate models with glmulti()
+To find the best model we proceed to an exhaustive screening of all the possible models BRI ~ soil_variables with the AICc criterion. 
+```{r find best soil model}
+  BRI.soil <- merge(BRI.unfert, soil_selected, by = 0) %>% column_to_rownames("Row.names")
+  colnames(BRI.soil)[1] = "BRI"
+  lm.soil <- lm(BRI ~. , data = BRI.soil)
+  
+  # This step is ran on the sciCORE
+  save(BRI.soil, file = "../output_files/BRI_soil.rda") # to send on the sciCORE
+  # soil.glm <- glmulti(lm.soil, level = 1, plotty = F, trace = F, crit = aicc)
+  
+  # We load the glmulti object from the sciCORE. 
+  load("../input_files/soil_glm.rda")
+  summary(soil.glm@objects[[1]])
+  
+  
+  soil.model <- lm(as.formula(summary(soil.glm)$bestmodel), data = BRI.soil) # running the model with the best coefficients previously found
+```
+
+## 3.1 Normality assumptions of the model
+Assessing the residuals normality assumptions the produced model. 
+These values are aggregated into the Table S5 for each model. 
+
+```{r soil model normality assumptions}
+  norm.soil <- ols_test_normality(soil.model)
+  print(norm.soil)
+```
+
+
+## 3.2 Relative importance of best model 
+The relative importance of each predictor in the previously selected model is computed in this step. These values are then used to complete the figure 3B in illustrator. 
+```{r soil model predictor relative importance}
+  soil.relimp <- calc.relimp(soil.model)
+  soil.relimp <- data.frame(soil.relimp@lmg)
+  colnames(soil.relimp) = "lmg"
+```
+
+
+
+## 3.3 Table S6
+Summary of the model coefficient and relative importance 
+```{r Table S6}
+  # merge tables so we see the coefficient and relative importance
+  soil.coefs <- data.frame(coef(soil.model))
+  table.s6 <- merge(soil.coefs, soil.relimp, by = 0, all = TRUE)
+  table.s6 <-  table.s6 %>% arrange(lmg)
+  colnames(table.s6) = c("Parameter", "Coefficient", "Relative importance")
+  
+  knitr::kable(table.s6, caption = "Table S6", label = NA)
+```
+
+
+## 3.4 Figure 3B
+```{r Figure 3B}
+  # preparing dataframe for plotting
+    v2.soil.relimp <- soil.relimp %>% tibble::rownames_to_column("Parameter") %>% 
+    mutate(type = ifelse(grepl("OTU", Parameter), "Fungi", "Soil")) %>%
+    mutate(model = "Soil")
+
+  v2.soil.relimp$lmg <- as.numeric(v2.soil.relimp$lmg)
+  # adding unexplained variance value
+  v2.soil.relimp <- rbind(v2.soil.relimp, c("Unexplained", 1-sum(v2.soil.relimp$lmg), "-", "Soil")) 
+  v2.soil.relimp$lmg <- as.numeric(v2.soil.relimp$lmg)
+  
+  v2.soil.relimp <- v2.soil.relimp %>% group_by(type) %>% 
+    arrange(-lmg, .by_group = TRUE) %>% 
+    map_df(rev) %>% 
+    mutate(added_lmg = cumsum(lmg)) %>% 
+    map_df(rev)
+  v2.soil.relimp$Parameter <- factor(v2.soil.relimp$Parameter, levels = v2.soil.relimp$Parameter)
+  
+  figure.3b <- ggplot(v2.soil.relimp, aes(x = model, y = round(lmg * 100, 2) , fill = Parameter)) +
+    geom_col(color = "black", width = 0.25) +
+    scale_fill_manual(values = c("white", "#E5D8D3", "#AE927E", "#593112", "#30190C")) +
+    ylab("% Variance explained") +
+    theme_void() +
+      theme(legend.position = "none")
+  
+  ggsave(filename = "../output_files/figure_3B.png", figure.3b)
+```
+
+```{r figure 3B for pdf, fig.width = 5, fig.height = 4, fig.align='center'}
+  figure.3B.pdf <- ggplot(v2.soil.relimp, aes(x = model, y = round(lmg * 100, 2) , fill = Parameter)) +
+    geom_col(color = "black", width = 0.25) +
+    scale_fill_manual(values = c("white", "#E5D8D3", "#AE927E", "#593112", "#30190C")) +
+    ylab("% Variance explained") +
+    pdf.theme +
+    theme_void() +
+      theme(legend.position = "none") 
+
+  plot(figure.3B.pdf)
+```
+
+

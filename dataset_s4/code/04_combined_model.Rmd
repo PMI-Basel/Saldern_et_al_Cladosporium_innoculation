@@ -1,0 +1,233 @@
+---
+title: "04_combined_model"
+author: "Loïc Thurre"
+date: "2024-09-19"
+output:
+  pdf_document: default
+header-includes: \usepackage{caption}
+knit: (function(inputFile, encoding) {
+  rmarkdown::render(inputFile, encoding = encoding, output_dir = "../output_files") })
+---
+
+\captionsetup[table]{labelformat=empty}
+
+
+```{r setup, include = FALSE}
+  knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+
+  library(glmulti)
+  library(ggplot2)
+  library(dplyr)
+  library(phyloseq)
+  library(tibble)
+  library(olsrr)
+  library(relaimpo)
+  library(vegan)
+
+    # defining plotting theme. 
+  MS.theme <- theme(
+          axis.text = element_text(size = 15),
+          axis.title = element_text(size = 18),
+          legend.title = element_text(face = "bold", size = 18),
+          legend.text = element_text(size = 17),
+          )
+  
+  pdf.theme <- theme(
+          axis.text = element_text(size = 12),
+          axis.title = element_text(size = 14),
+          legend.title = element_text(face = "bold", size = 14),
+          legend.text = element_text(size = 13),
+  )
+```
+
+We finally explored to which degree a combination of physicochemical and fungal soil parameters could improve the modelling of the observed variability in BRI
+
+# 0. Data importation
+```{r data importation}
+  # loading phyloseq objects containing soil data + otus count tables and design files
+  load("../input_files/mi13.rds")
+  load("../input_files/mi13_norm.rds")
+  
+  # extract soil variables and BRI 
+  soil_BRI <- data.frame(sample_data(mi13.norm))
+  
+  # extract otus data
+  otus_BRI <- data.frame(otu_table(mi13.norm))
+  
+  # join for combined modeling 
+  combined_data <- merge(soil_BRI, otus_BRI, by = 0) %>% tibble::column_to_rownames("Row.names")
+  
+  # save for glmulti on the sciCORE
+  save(combined_data, file = "../input_files/combined_data.rda")
+```
+
+
+# 1. Exhaustive screening of the best comined model
+Again, we screened for the best OLS model based on previsouly selected otus and soil parameters
+```{r}
+  # results from the sciCORE
+  load("../input_files/combined_glm.rda")
+
+  summary(combined.glm@objects[[1]])
+  combined.model <- lm(as.formula(summary(combined.glm)$bestmodel), data = combined_data) # running the model with the best coefficients previously found
+```
+
+
+## 1.1 Normality assumptions
+Assessing the residuals normality assumptions the produced model. 
+The best model is not fully respecting the residuals normality assumptions. 
+These values are aggregated into the Table S5 for each model. 
+```{r normality assumptions}
+  ols_test_normality(combined.model)
+```
+
+## 1.2 Predictors relative importance
+```{r relative importance}
+   combined.relimp <- calc.relimp(combined.model)
+   combined.relimp <- data.frame(combined.relimp@lmg)
+   colnames(combined.relimp) = "lmg"
+```
+
+## 1.3 Table S10
+Summary of the model coefficients and relative importance.
+```{r table S10}
+  # merge tables so we see the coefficient and relative importance
+  combined.coefs <- data.frame(coef(combined.model))
+  table.s10 <- merge(combined.coefs, combined.relimp, by = 0, all = TRUE)
+  table.s10 <-  table.s10 %>% arrange(lmg)
+  colnames(table.s10) = c("Parameter", "Coefficient", "Relative importance")
+  
+  knitr::kable(table.s10, caption = "Table S10", label = NA)
+```
+
+
+## 1.1 Figure 5A
+```{r figure 5A}
+   # preparing dataframe for plotting
+    combined.relimp <- combined.relimp %>% tibble::rownames_to_column("Parameter") %>% 
+    mutate(type = ifelse(grepl("OTU", Parameter), "Fungi", "Soil")) %>%
+    mutate(model = "Combined")
+
+  combined.relimp$lmg <- as.numeric(combined.relimp$lmg)
+  
+  # adding unexplained variance value
+  combined.relimp <- rbind(combined.relimp, c("Unexplained", 1-sum(combined.relimp$lmg), "-", "Combined")) 
+  combined.relimp$lmg <- as.numeric(combined.relimp$lmg)
+  
+  combined.relimp <- combined.relimp %>% group_by(type) %>% arrange(-lmg, .by_group = TRUE)
+  combined.relimp$Parameter <- factor(combined.relimp$Parameter, levels = combined.relimp$Parameter)
+  
+  figure.5A <- ggplot(combined.relimp, aes(x = model, y = round(lmg * 100, 2) , fill = Parameter)) +
+    geom_col(color = "black", width = 0.25) +
+    scale_fill_manual(values = c("white","#0F3045", "#4086AD","#236F9A", "#5F9BBC", "#E5D8D3", "#AE927E")) +
+    ylab("% Variance explained") +
+    MS.theme +
+    theme_void() +
+    theme(
+      legend.position = "none"
+    ) 
+  
+  
+  ggsave(figure.5A, file = "../output_files/figure_5A.png", width = 8, height = 7, dpi = 300)
+```
+
+
+```{r figure 5A for PDF, fig.width = 5, fig.height = 4, fig.align='center'}
+  figure.5A.pdf <- ggplot(combined.relimp, aes(x = model, y = round(lmg * 100, 2) , fill = Parameter)) +
+    geom_col(color = "black", width = 0.25) +
+    scale_fill_manual(values = c("white","#0F3045", "#4086AD","#236F9A", "#5F9BBC", "#E5D8D3", "#AE927E")) +
+    ylab("% Variance explained") +
+    pdf.theme +
+    theme_void() +
+    theme(
+      legend.position = "none",
+    ) 
+
+  plot(figure.5A.pdf)
+```
+
+
+
+# 2. Redundancy analysis
+We used redundancy analysis (RDA) to visualise the relationship between the parameters included in this model and BRI
+## 2.1 RDA
+```{r redundancy analysis}
+  mi13.sqrt <- mi13.norm
+  otu_table(mi13.sqrt) <- sqrt(otu_table(mi13.norm)) # sqrt transformation of OTU data.
+  
+  otus <- data.frame(otu_table(mi13.sqrt))
+  env <- data.frame(sample_data(mi13.norm))
+  
+  rda <- vegan::rda(otus ~ Humus+Clay+Sand+pH+P_H2O+K_H2O+Mg_H2O+Ca_H2O+P_AAE+K_AAE+Mg_AAE+Ca_AAE+Cu+Fe+Mn+B+WHC+Corg+Nmin+CEC, data = env)
+  species_scores <- scores(rda, display = "species")
+  sites_scores <- scores(rda, display = "sites")
+  soil_effects <- data.frame(scores(rda, display = "bp", scaling = 2))
+  species_to_highlight <- c("OTU576", "OTU110", "OTU2203", "OTU25")
+  soil_to_highlight <- c("WHC", "Corg")
+  
+  summary(rda)
+```
+
+## 2.2 Figure 5B
+ We report the combined relationships of chemistry and fungi for all soils in the RDA 
+```{r figure 5B}
+  figure.5B <-  ggplot() +
+      geom_text(data =species_scores, size = 6, angle = 30,aes(x = RDA1*5, y = RDA2*5,
+                                    label = ifelse(rownames(species_scores) %in% species_to_highlight, rownames(species_scores), NA))) +
+      geom_text(data =sites_scores,  size = 7, aes(x = RDA1, y = RDA2, label = rownames(sites_scores),color = soil_BRI$BRI)) +
+        scale_color_gradient( low = "#0f5dc1", high = "#2dfa88", name = "BRI (%)") +
+      geom_segment(data = soil_effects, aes(xend = RDA1*2, yend = RDA2*2, x = 0, y = 0,
+                   alpha = ifelse(rownames(soil_effects) %in% soil_to_highlight, TRUE, FALSE)),
+                   arrow = arrow()) +
+      geom_text(data = soil_effects, size = 7, 
+                aes(x = RDA1 *2.25, y = RDA2 *2.25, 
+                    alpha = ifelse(rownames(soil_effects) %in% soil_to_highlight, TRUE, FALSE), 
+                                                   label = rownames(soil_effects))) +
+      xlab("RDA1 (9.67 %)") + ylab("RDA2 (8.4 %)") +
+      scale_alpha_manual(values = c(0, 1), guide = 'none') +
+      theme_bw() +
+      MS.theme
+
+  ggsave(figure.5B, file = "../output_files/figure_5B.png", width = 8, height = 7, dpi = 300)
+```
+
+
+```{r figure 5B for pdf, fig.width = 5, fig.height = 4, fig.align='center'}
+   figure.5B.pdf <-  ggplot() +
+      geom_text(data =species_scores, size = 4, angle = 30,aes(x = RDA1*5, y = RDA2*5,
+                                    label = ifelse(rownames(species_scores) %in% species_to_highlight, rownames(species_scores), NA))) +
+      geom_text(data =sites_scores,  size = 5, aes(x = RDA1, y = RDA2, label = rownames(sites_scores),color = soil_BRI$BRI)) +
+        scale_color_gradient( low = "#0f5dc1", high = "#2dfa88", name = "BRI (%)") +
+      geom_segment(data = soil_effects, aes(xend = RDA1*2, yend = RDA2*2, x = 0, y = 0,
+                   alpha = ifelse(rownames(soil_effects) %in% soil_to_highlight, TRUE, FALSE)),
+                   arrow = arrow()) +
+      geom_text(data = soil_effects, size = 5, 
+                aes(x = RDA1 *2.25, y = RDA2 *2.25, 
+                    alpha = ifelse(rownames(soil_effects) %in% soil_to_highlight, TRUE, FALSE), 
+                                                   label = rownames(soil_effects))) +
+      xlab("RDA1 (9.67 %)") + ylab("RDA2 (8.4 %)") +
+      scale_alpha_manual(values = c(0, 1), guide = 'none') +
+      theme_bw() +
+      pdf.theme
+
+  plot(figure.5B.pdf)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

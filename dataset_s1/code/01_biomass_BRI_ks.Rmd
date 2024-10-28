@@ -1,0 +1,667 @@
+---
+title: "01_biomass_BRI"
+author: "Loïc Thurre"
+date: "2024-09-06"
+output:
+  pdf_document: default
+header-includes: \usepackage{caption}
+knit: (function(inputFile, encoding) {
+  rmarkdown::render(inputFile, encoding = encoding, output_dir = "../output_files") })
+---
+
+\captionsetup[table]{labelformat=empty}
+
+
+```{r setup, include=FALSE}
+  # knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+  knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+  library(ggsignif)
+  library(dplyr)
+  library(ggplot2)
+  library(tidyr)
+  library(tibble)
+  library(rstudioapi)
+  library(reshape2)
+  library(writexl)
+  library(openxlsx)
+  library(emmeans)
+  library(ggpubr)
+  library(multcomp)
+  
+  # styling
+  inoculation_colors <- c(IF = "seagreen4", I = "salmon3")
+  inoculation_labels <- c(IF = "Fertilised", I = "Non-fertilised")
+  
+  
+# defining plotting theme. 
+  MS.theme <- theme(
+          axis.text = element_text(size = 15),
+          axis.title = element_text(size = 18),
+          legend.title = element_text(face = "bold", size = 18),
+          legend.text = element_text(size = 17),
+          )
+  
+  pdf.theme <- theme(
+          axis.text = element_text(size = 12),
+          axis.title = element_text(size = 14),
+          legend.title = element_text(face = "bold", size = 14),
+          legend.text = element_text(size = 13),
+  )
+  
+  sessionInfo()
+```
+
+### Loading functions 
+```{r functions}
+  #tukey posthoc test
+  tukey_posthoc <- function(data, response_variable){
+    for(soil in unique(data$soil_ID)){
+      #subet
+      df_subset <- data[data$soil_ID==soil,]
+      #get clds
+      model <- aov(data = df_subset, formula = as.formula(paste(response_variable, "~ treatment")))
+      emmeans <- emmeans(model, c("treatment"))
+      cld <- cld(emmeans, Letter="abcde", alpha=0.05) 
+      cld$.group <- trimws(cld$.group) #rm whitespaces
+      cld$soil <- soil #add soil
+      #concat results
+      if(soil == unique(data$soil_ID)[1]){cld_df <- cld}
+      else{cld_df <- rbind(cld_df, cld)}
+    }
+    return(cld_df)
+  }
+```
+
+# 0. Data importation
+
+```{r raw harvest data importation}
+  # harvest <- read.csv(file ="../input_files/harvest.csv", header = TRUE, row.names = 1)
+  harvest <- read.xlsx("../input_files/Fifth_harvest_incl_replanted_batches_equalized.xlsx") # harvesting raw data
+  
+  # Processing the harvesting data, in several steps.
+  harvest <- harvest %>%
+    filter(!is.na(first_emergence)) %>%
+    filter(!is.na(dry_weight_shoot)) %>%
+    dplyr::select(soil_ID, treatment, dry_weight_root, dry_weight_shoot) %>%
+    mutate(treatment = gsub("wcwof", "I", treatment)) %>%
+    mutate(treatment = gsub("I ", "I", treatment)) %>%
+    mutate(treatment = gsub("wcwf", "IF", treatment)) %>%
+    mutate(treatment = gsub("wocwof", "C", treatment)) %>%
+    mutate(treatment = gsub("wocwf", "F", treatment)) %>%
+    arrange(soil_ID) %>%
+    mutate(total_dry_weight = dry_weight_root + dry_weight_shoot)
+  
+   # Inspecting the effect of different factors with anova
+  harvest <- harvest %>% 
+    mutate(fertilization = ifelse(grepl("F", treatment), "Fertilised", "Unfertilised")) %>%
+    mutate(inoculation = ifelse(grepl("I", treatment), "Inoculated", "Mock"))
+  
+  harvest$fertilization <- factor(harvest$fertilization, levels = base::unique(harvest$fertilization))
+  harvest$treatment <- factor(harvest$treatment, levels = base::unique(harvest$treatment))
+  harvest$soil_ID <- factor(harvest$soil_ID, levels = base::unique(harvest$soil_ID))
+  
+    # calculating means and ses
+  means_and_se <-  harvest %>%
+    group_by(soil_ID, treatment) %>%
+    mutate(mean_dry_weight_root = mean(dry_weight_root),
+         se_dry_weight_root = sd(dry_weight_root) / sqrt(n()), # Calculate SE
+         mean_dry_weight_shoot = mean(dry_weight_shoot),
+         se_dry_weight_shoot = sd(dry_weight_shoot) / sqrt(n()), # Calculate SE
+         mean_total_dry_weight = mean(total_dry_weight),
+         se_total_dry_weight = sd(total_dry_weight) / sqrt(n())) %>%
+    ungroup() %>%
+    dplyr::select(-dry_weight_root, -dry_weight_shoot, -total_dry_weight)
+  
+  means_and_se <- means_and_se %>%
+    distinct(soil_ID, treatment, .keep_all = TRUE)
+```
+
+
+# 1. Biomass
+## 1.1 ANOVA assumptions and data transformation
+If normality is not respected for a unique combination of treatments, rank-transformation is applied. Results are displayed in the heatmap. 
+```{r ANOVA assumptions, warning=FALSE}
+  
+    # testing the assumptions for ANOVA
+    groups <- split(harvest, list(harvest$soil_ID, harvest$fertilization, harvest$inoculation)) # unique combination of treatment
+    significance_level = 0.05 # alpha
+    
+    
+    groups.distrib <- data.frame(matrix(ncol = 3))
+    colnames(groups.distrib) = c("Group", "Assumption", "Correction")
+    # iterate through all the combination and assess the normality inside of each unique group
+    for (i in seq_along(groups)) {
+      group <- groups[[i]]
+      group_name <- names(groups)[i]
+      
+      test_total <- shapiro.test(group$total_dry_weight)
+      
+          if (test_total$p.value < significance_level) {
+            sqrt.trans <- shapiro.test(rank(group$total_dry_weight))
+            correction <- ifelse(sqrt.trans$p.value > significance_level, "Rank transformed", "Not corrected")
+            groups.distrib[i,] = c(group_name, "Not normally distributed", correction)
+            
+          } else {
+            groups.distrib[i,] = c(group_name, "Normally distributed", "-")
+          }
+    }
+```
+
+Heatmap of the distributions
+```{r heatmap of normality assumptions}
+  # prepare data for the graph
+#   groups.distrib <- groups.distrib %>% 
+#         separate(Group, into = c("Field", "Fertilisation", "Inoculation"), sep = "\\.")
+# 
+#   triangles <- groups.distrib
+#   triangles <- triangles %>% mutate(y1 = as.numeric(as.factor(triangles$Field))) %>% 
+#     mutate(x1 = as.numeric(as.factor(triangles$Fertilisation)))
+#   z <- rep(seq(nrow(triangles)/2), each = 2)
+#   
+#   triangles <- triangles %>% arrange(Field) %>%
+#     mutate(z = z)
+# 
+#   ggplot(groups.distrib, aes(x = Fertilisation, y = Field, fill = Correction)) +
+#     geom_tile() +
+#     geom_polygon(data = triangles, aes(x = x1, y = y1, group = z))
+#   
+# 
+#   
+#   df <- tibble::tibble(x = c(LETTERS[1:6], LETTERS[1:5]),
+#                    y = c(paste0("V", 1:6), paste0("V", 1:5)),
+#                    group = c(rep("group_1", 6), rep("group_2", 5)))
+#                   
+# 
+# df1    <- df[!duplicated(interaction(df$x, df$y)),]
+# df2    <- df[duplicated(interaction(df$x, df$y)),]
+# df2    <- df[rep(seq(nrow(df)), each = 3),]
+# df2$x1 <- as.numeric(as.factor(df2$x))
+# df2$y1 <- as.numeric(as.factor(df2$y))
+# df2$x1 <- df2$x1 + c(-0.5, 0.5, 0.5)
+# df2$y1 <- df2$y1 + c(-0.5, -0.5, 0.5)
+# df2$z  <- rep(seq(nrow(df2)/3), each = 3)
+# 
+# ggplot(df1, aes(x = x, y = y, fill = group)) + 
+#   geom_tile() +
+#   geom_polygon(data = df2, aes(x = x1, y = y1, group = z))
+```
+
+
+```{r applying transformations}
+    groups <- split(harvest, list(harvest$soil_ID, harvest$fertilization, harvest$inoculation)) # unique combination of treatment
+    significance_level = 0.05 # alpha
+    
+    not.normal <- c("F01", "F57", "F29", "F31", "F04")
+    
+    # iterate through all the combination and assess the normality inside of each unique group
+    for (i in seq_along(groups)) {
+      group <- groups[[i]]
+      group_name <- names(groups)[i]
+      
+          if (unique(group$soil_ID) %in% not.normal) {
+            group$total_dry_weight <- rank(group$total_dry_weight) # rank-transform data
+            groups[[i]] = group# change in dataset
+          }
+    }
+    
+    # flatten the dataframe for ANOVA use
+    groups.combined <- bind_rows(groups)
+```
+
+
+
+
+## 1.2 ANOVA 
+We test for the effects of fertilisation, inoculation and their interaction on biomass
+
+Model: total_dry_weight ~ soil_ID + fertilization * inoculation.  
+
+```{r ANOVA test total dry weight}
+    effect <- aov(total_dry_weight ~ soil_ID + fertilization * inoculation, data = groups.combined)
+    aov.results <- data.frame(anova(effect)) %>% rownames_to_column("Parameter")
+    knitr::kable(aov.results, caption = "Table S2", label = NA)
+```
+
+## 1.4 Posthoc tukey test for unique combination of treatments
+Posthoc tukey test is applied between every pair of treatment in a given field. 
+This data is displayed in figure S3.
+```{r Tukey posthoc for fig. S3}
+  aov.total <- aov(data = harvest, formula = total_dry_weight ~ treatment * soil_ID)
+  # prepare data for significance values
+  t.total <- tukey_posthoc(groups.combined, "total_dry_weight") %>% mutate(soil_ID = soil)
+  s3.data <- merge(means_and_se, t.total, by = c("soil_ID", "treatment"))
+  
+  # using the means and se dataset from before. 
+  s3.data <- s3.data %>%
+    mutate(treatment = dplyr::recode(treatment, 
+             "C" = "Control", 
+             "F" = "Fertilised",
+             "I" = "Inoculated",
+             "IF" = "Inoculated + Fertilised")
+    )
+  
+  s3.data$treatment <- factor(s3.data$treatment, levels = c("Control", "Inoculated", "Fertilised", "Inoculated + Fertilised"))
+  
+  # Change field name if they were rank transformed
+  s3.data <- s3.data %>% mutate(soil_ID = ifelse(soil_ID %in% not.normal, paste0(soil_ID,"*"), paste0(soil_ID)))
+```
+
+## 1.5 Fig. S3
+```{r fig S3}
+  s3 <- ggplot(s3.data, aes(x = treatment, y = mean_total_dry_weight, fill = treatment)) +
+    geom_col() +
+    geom_errorbar(aes(x = treatment, 
+                      ymin = mean_total_dry_weight - se_total_dry_weight, 
+                      ymax = mean_total_dry_weight + se_total_dry_weight),
+                  width = 0.2) +
+    geom_text(aes(x = treatment, y = mean_total_dry_weight + 250, label = .group), alpha = 0.90, size = 5) +
+    scale_y_continuous(limits = c(0, 1650), expand = c(0,0)) +
+    scale_fill_manual(values = c("salmon1", "salmon3", "seagreen3", "seagreen4"))+
+    theme_bw() +
+    theme(
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      strip.text = element_text(size = 16),
+      axis.title.x = element_blank(),
+    ) +
+    MS.theme +
+    ylab("Total dry weight (mg)") +
+    guides(fill = guide_legend(title = "Treatment")) +
+    facet_wrap(~soil_ID) 
+
+  ggsave(filename = "../output_files/fig_s3.png", plot = s3, width = 10, height = 8, dpi = 300)
+```
+
+```{r fig s3 for PDF, fig.height=10, fig.width=10}
+  s3.pdf <- ggplot(s3.data, aes(x = treatment, y = mean_total_dry_weight, fill = treatment)) +
+    geom_col() +
+    geom_errorbar(aes(x = treatment, 
+                      ymin = mean_total_dry_weight - se_total_dry_weight, 
+                      ymax = mean_total_dry_weight + se_total_dry_weight),
+                  width = 0.2) +
+    geom_text(aes(x = treatment, y = mean_total_dry_weight + 250, label = .group), alpha = 0.90, size = 5) +
+    scale_y_continuous(limits = c(0, 1650), expand = c(0,0)) +
+    scale_fill_manual(values = c("salmon1", "salmon3", "seagreen3", "seagreen4"))+
+    theme_bw() +
+    theme(
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      axis.title.x = element_blank(),
+       strip.text = element_text(size = 16)
+    ) + pdf.theme +
+    ylab("Total dry weight (mg)") +
+    guides(fill = guide_legend(title = "Treatment")) +
+    facet_wrap(~soil_ID) 
+
+  plot(s3.pdf)
+```
+
+# 2. Biomass Response to Inoculation - BRI
+## 2.1 Unfertilised 
+We compute the BRI (Biomass response to fungal inoculation) in unfertilised soils by following the equation in Köhl et al. 2016
+```{r BRI calculations unfertilized, echo = FALSE}
+    #splitting between fertilized and unfertilized treatments
+  # Unfertilised treatments
+  biomass_field_U <- harvest %>% filter(!grepl("F", treatment))
+  means_and_se_U <- means_and_se %>% filter(!grepl("F", treatment)) %>% 
+    dplyr::select(soil_ID, treatment, mean_total_dry_weight) %>% 
+    pivot_wider(names_from = treatment, values_from = mean_total_dry_weight)
+  
+  #preparing for BRI calculations 
+  BRI_field_U <- left_join(biomass_field_U, means_and_se_U, by = "soil_ID") %>% 
+                    mutate(meanC = C) %>% dplyr::select(soil_ID, treatment, total_dry_weight, meanC) %>% 
+                    filter(treatment == "I") %>% mutate(diff = total_dry_weight - meanC)
+
+  
+  #BRI calculations for Unfertilized
+  BRI_field_U <- BRI_field_U %>% mutate(equation1 = 100*(1-meanC/total_dry_weight))
+  BRI_field_U <- BRI_field_U %>% mutate(equation2 = 100*(-1+total_dry_weight/meanC))
+  
+  BRI_field_U <- BRI_field_U %>% mutate(BRI = if_else(diff>0, equation1, equation2))
+
+    mod1 <- lm(BRI ~ 0 + soil_ID, data = BRI_field_U)
+
+  #anova(mod1)
+  
+  results_model_U <- as.data.frame(summary(mod1)$coefficients)
+  
+  results_model_U <-results_model_U %>% 
+                  rownames_to_column("new_field") %>%
+                  left_join( as.data.frame(confint(mod1)) %>%
+                  rownames_to_column("new_field"), )
+  
+  colnames(results_model_U)[3] <- "SE"
+  colnames(results_model_U)[5] <- "P"
+  colnames(results_model_U)[6] <- "lower_bound"
+  colnames(results_model_U)[7] <- "upper_bound"
+  
+  paste0(results_model_U[7,])
+  
+   write.csv(results_model_U ,file = "../output_files/BRI_unfertilised.csv")
+```
+## 2.2 Fertilised 
+We compute the BRI (Biomass response to fungal inoculation) in unfertilised soils by following the equation in Köhl et al. 2016
+```{r BRI calculations fertilized}
+   # Fertilized treatments
+    biomass_field_F <- harvest %>% filter(grepl("F", treatment))
+    
+    means_and_se_F <- means_and_se %>% filter(grepl("F", treatment)) %>% 
+        dplyr::select(soil_ID, treatment, mean_total_dry_weight) %>% 
+        pivot_wider(names_from = treatment, values_from = mean_total_dry_weight)
+      
+    BRI_field_F <- left_join(biomass_field_F, means_and_se_F, by = "soil_ID") %>% 
+                    mutate(meanC = F) %>% dplyr::select(soil_ID, treatment, total_dry_weight, meanC) %>% 
+                    filter(treatment == "IF") %>% mutate(diff = total_dry_weight - meanC)
+  
+    BRI_field_F <- BRI_field_F %>% mutate (equation1 = 100*(1-meanC/total_dry_weight))
+    BRI_field_F <- BRI_field_F %>% mutate (equation2 = 100*(-1+total_dry_weight/meanC))
+  
+    BRI_field_F <- BRI_field_F %>% mutate (BRI = if_else(diff>0, equation1, equation2))
+    
+    
+      mod2 <- lm(BRI ~ 0 + soil_ID, data = BRI_field_F)
+
+  #anova(mod2)
+  
+  results_model_F <- as.data.frame(summary(mod2)$coefficients)
+  
+  results_model_F <-results_model_F %>% 
+                  rownames_to_column("new_field") %>%
+                  left_join( as.data.frame(confint(mod2)) %>%
+                  rownames_to_column("new_field"), )
+  
+  colnames(results_model_F)[3] <- "SE"
+  colnames(results_model_F)[5] <- "P"
+  colnames(results_model_F)[6] <- "lower_bound" # 2.5 % confint
+  colnames(results_model_F)[7] <- "upper_bound" # 97.5 % confint
+  
+  write.csv(results_model_F ,file = "../output_files/BRI_fertilised.csv")
+```
+## 2.3 Pairwise comparaison of BRI_fertilised ~ BRI_unfertilised.
+For each field, a t-test is applied between fertilised and unfertilised values, p-values are corrected with Bonferroni-Hochberg. This data is displayed in figure 2A.     
+
+```{r t-test between I and IF treatments}
+  BRI_test_F <- BRI_field_F %>% dplyr::select(c(soil_ID, treatment, BRI))
+  BRI_test_U <- BRI_field_U %>% dplyr::select(c(soil_ID, treatment, BRI))
+  
+  # grouping by field, t.test between treatments and p-value correction with Bonferroni Hochberg
+  BRI_test <- rbind(BRI_test_F, BRI_test_U) %>% 
+    dplyr::group_by_("soil_ID") %>% 
+    dplyr::summarise(p.value = t.test(BRI ~ treatment)$p.value) %>%
+    mutate(p.value = p.adjust(p.value, method = "BH")) %>%
+    ungroup()
+  
+  colnames(BRI_test)[1] = "new_field"
+```
+
+
+```{r saving and exporting data for modeling}
+  BRI_masterTable <- rbind(BRI_field_F, BRI_field_U)
+  write.csv(BRI_masterTable, file = "../output_files/BRI_masterTable.csv")
+```
+
+
+
+
+## 2.4 Figure 2A
+```{r preparing data for figures}
+  results_model_F <- results_model_F %>% mutate(treatment = "IF")
+  results_model_U <- results_model_U %>% mutate(treatment = "I")
+  
+  BRI_I_IF_box <- rbind(results_model_F, results_model_U) # joining fertilised and unfertilised
+  
+  # calculate difference in BRI between fertilised and unfertilised to order in the figure. 
+  diff <- left_join(results_model_F, results_model_U, by = "new_field") %>%
+    mutate(diff = Estimate.x - Estimate.y) %>% 
+    arrange(diff) %>% 
+    dplyr::select(c(diff, new_field))
+  
+  BRI_I_IF_box <- left_join(BRI_I_IF_box, diff, by = "new_field") # add difference to DF for plot.
+  BRI_I_IF_box <- BRI_I_IF_box %>% arrange(diff) # order by ascending difference
+  
+  BRI_I_IF_box$new_field <- gsub("soil_ID", "", BRI_I_IF_box$new_field) # modify soil labels for plotting
+  
+  # joining the previously calculated t-test
+  BRI_I_IF_box <- left_join(BRI_I_IF_box, BRI_test, by = "new_field") # joining the previously calculated t-test
+  
+  # transforming to factor to ensure the right order in the plot
+  BRI_I_IF_box$new_field <- factor(BRI_I_IF_box$new_field, levels = unique(BRI_I_IF_box$new_field))
+```
+
+
+```{r Figure 2A}
+  fig.2A <- ggplot(BRI_I_IF_box, aes( x = treatment, y = Estimate, color = treatment)) +
+    geom_hline(yintercept =  0, linetype = "dashed", color = "snow4", lwd = 0.4) +
+    geom_linerange(aes(ymin = lower_bound, ymax = upper_bound), size = 5) +
+    geom_point(size = 5.5) +
+    ylim(min(BRI_I_IF_box$lower_bound) - 8, max(BRI_I_IF_box$upper_bound)+8) +
+    scale_color_manual(values = inoculation_colors, labels = inoculation_labels,
+                      name = "Fertilisation treatment") + 
+    labs(x = "", y = "Biomass Reponse to Inoculation (BRI) [%]") +
+    theme_bw() +
+    MS.theme +
+    theme(
+      legend.position = "bottom",
+      axis.text.x=element_blank(), 
+      axis.ticks.x=element_blank(),
+      strip.text = element_text(size = 16)
+    ) +
+     facet_wrap(~ new_field, nrow = 3, ncol = 10) +
+      geom_text(
+        aes(x = 1.5, y = upper_bound + 6),  # Adjust the position of the asterisks
+        label = ifelse(BRI_I_IF_box$p.value < 0.05 & BRI_I_IF_box$treatment == "IF", "*", ""),  # Add asterisks for significant soil IDs
+        size = 10, color = "black"  # Adjust the size of the asterisks
+      ) +
+      geom_segment(aes(x=1, xend=2, 
+                     y=upper_bound + 4, 
+                     yend=upper_bound + 4, 
+                     linetype="solid"), 
+                     color = "black", 
+                     lwd = ifelse(BRI_I_IF_box$p.value < 0.05 & BRI_I_IF_box$treatment == "IF", 0.5, 0), show.legend = F)
+
+  ggsave(filename = "../output_files/fig_2A.png", plot = fig.2A, width = 12, height = 12, dpi = 300)
+```
+
+```{r fig 2A for pdf, fig.width=10,fig.height=10}
+  fig.2A.pdf <- ggplot(BRI_I_IF_box, aes( x = treatment, y = Estimate, color = treatment)) +
+    geom_hline(yintercept =  0, linetype = "dashed", color = "snow4", lwd = 0.4) +
+    geom_linerange(aes(ymin = lower_bound, ymax = upper_bound), size = 5) +
+    geom_point(size = 5.5) +
+    ylim(min(BRI_I_IF_box$lower_bound) - 8, max(BRI_I_IF_box$upper_bound)+8) +
+    scale_color_manual(values = inoculation_colors, labels = inoculation_labels,
+                      name = "Fertilisation treatment") + 
+    labs(x = "", y = "Biomass Reponse to Inoculation (BRI) [%]") +
+    theme_bw() +
+    MS.theme +
+    theme(
+      legend.position = "bottom",
+      axis.text.x=element_blank(), 
+      axis.ticks.x=element_blank(),
+       strip.text = element_text(size = 14)
+    ) +
+     facet_wrap(~ new_field, nrow = 3, ncol = 10) +
+      geom_text(
+        aes(x = 1.5, y = upper_bound + 6),  # Adjust the position of the asterisks
+        label = ifelse(BRI_I_IF_box$p.value < 0.05 & BRI_I_IF_box$treatment == "IF", "*", ""),  # Add asterisks for significant soil IDs
+        size = 10, color = "black"  # Adjust the size of the asterisks
+      ) + pdf.theme +
+      geom_segment(aes(x=1, xend=2, 
+                     y=upper_bound + 4, 
+                     yend=upper_bound + 4, 
+                     linetype="solid"), 
+                     color = "black", 
+                     lwd = ifelse(BRI_I_IF_box$p.value < 0.05 & BRI_I_IF_box$treatment == "IF", 0.5, 0), 
+                      alpha = ifelse(BRI_I_IF_box$p.value < 0.05 & BRI_I_IF_box$treatment == "IF", 1, 0),
+                     show.legend = F)
+
+  plot(fig.2A.pdf)
+```
+
+
+
+## 2.5 Fig. S4A
+```{r Fig. S4A}
+  pd <- position_dodge(0.5)
+  
+  fig.s4A <-ggplot(data = results_model_U %>% mutate(field = gsub("soil_ID", "", new_field)),
+               aes(x = reorder(field, -Estimate), 
+                   y = Estimate)) +
+               geom_point(size=4,
+                          aes(color = ifelse(results_model_U$P < 0.05 & results_model_U$Estimate < 0, "Significantly reduced", ifelse(results_model_U$P > 0.05, "Not significant", "Significantly improved")))) +
+               geom_errorbar(aes(ymin=lower_bound, 
+                                 ymax=upper_bound,
+                                 color = ifelse(results_model_U$P < 0.05 & results_model_U$Estimate < 0, "Significantly reduced", ifelse(results_model_U$P > 0.05, "Not significant", "Significantly improved"))), 
+                                 width=0, size=2, position=pd) +
+    scale_color_manual(name = "Significance",
+                                 breaks = c("Significantly improved", "Not significant", "Significantly reduced"),
+                                 values = c("Significantly improved" = "green4", "Not significant" = "black", "Significantly reduced" = "red2")) +
+               ylab("BRI (%)")+
+               xlab("Field")+
+               theme_bw()+
+              MS.theme +
+              theme(
+                legend.position = "none"
+              )+
+              geom_hline(yintercept=0, color="black") + 
+              theme(axis.text.x = element_text(angle = 90, hjust = 1, size=15))
+    
+    ggsave(filename = "../output_files/fig_s4A.png", plot = fig.s4A, width = 10, height = 5, dpi = 300)
+```
+
+```{r Fig. S4A pdf, fig.width = 10, fig.heigh = 5}
+  pd <- position_dodge(0.5)
+  
+  fig.s4A.pdf <-ggplot(data = results_model_U %>% mutate(field = gsub("soil_ID", "", new_field)),
+               aes(x = reorder(field, -Estimate), 
+                   y = Estimate)) +
+               geom_point(size=4,
+                          aes(color = ifelse(results_model_U$P < 0.05 & results_model_U$Estimate < 0, "Significantly reduced", ifelse(results_model_U$P > 0.05, "Not significant", "Significantly improved")))) +
+               geom_errorbar(aes(ymin=lower_bound, 
+                                 ymax=upper_bound,
+                                 color = ifelse(results_model_U$P < 0.05 & results_model_U$Estimate < 0, "Significantly reduced", ifelse(results_model_U$P > 0.05, "Not significant", "Significantly improved"))), 
+                                 width=0, size=2, position=pd) +
+    scale_color_manual(name = "Significance",
+                                 breaks = c("Significantly improved", "Not significant", "Significantly reduced"),
+                                 values = c("Significantly improved" = "green4", "Not significant" = "black", "Significantly reduced" = "red2")) +
+               ylab("BRI (%)")+
+               xlab("Field")+
+               theme_bw()+
+              theme(
+                legend.position = "none"
+              )+ pdf.theme +
+              geom_hline(yintercept=0, color="black") + 
+              theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 15))
+
+    plot(fig.s4A.pdf)
+```
+
+## 2.6 Fig. S4B
+```{r Fig. S4B }
+  pd <- position_dodge(0.5)
+  
+  fig.s4B <-ggplot(data = results_model_F %>% mutate(field = gsub("soil_ID", "", new_field)),
+               aes(x = reorder(field, -Estimate), 
+                   y = Estimate)) +
+               geom_point(size=4,
+                          aes(color = ifelse(results_model_F$P < 0.05 & results_model_F$Estimate < 0, "Significantly reduced", ifelse(results_model_F$P > 0.05, "Not significant", "Significantly improved")))) +
+               geom_errorbar(aes(ymin=lower_bound, 
+                                 ymax=upper_bound,
+                                 color = ifelse(results_model_F$P < 0.05 & results_model_F$Estimate < 0, "Significantly reduced", ifelse(results_model_F$P > 0.05, "Not significant", "Significantly improved"))), 
+                                 width=0, size=2, position=pd) +
+               ylab("BRI (%)")+
+               xlab("Field")+
+               scale_color_manual(name = "Significance",
+                                         breaks = c("Significantly improved", "Not significant", "Significantly reduced"),
+                                         values = c("Significantly improved" = "green4", "Not significant" = "black", "Significantly reduced" = "red2")) +
+              theme_bw()+
+              MS.theme +
+              theme(
+                legend.position = "bottom"
+              )+ 
+              geom_hline(yintercept=0, color="black") + 
+              theme(axis.text.x = element_text(angle = 90, hjust = 1, size=15))
+
+    ggsave(filename = "../output_files/fig_s4B.png", plot = fig.s4B, width = 10, height = 5, dpi = 300)
+```
+
+
+```{r Fig. S4B pdf, fig.width = 10, fig.heigh = 5}
+ fig.s4B.pdf <-ggplot(data = results_model_F %>% mutate(field = gsub("soil_ID", "", new_field)),
+               aes(x = reorder(field, -Estimate), 
+                   y = Estimate)) +
+               geom_point(size=4,
+                          aes(color = ifelse(results_model_F$P < 0.05 & results_model_F$Estimate < 0, "Significantly reduced", ifelse(results_model_F$P > 0.05, "Not significant", "Significantly improved")))) +
+               geom_errorbar(aes(ymin=lower_bound, 
+                                 ymax=upper_bound,
+                                 color = ifelse(results_model_F$P < 0.05 & results_model_F$Estimate < 0, "Significantly reduced", ifelse(results_model_F$P > 0.05, "Not significant", "Significantly improved"))), 
+                                 width=0, size=2, position=pd) +
+               ylab("BRI (%)")+
+               xlab("Field")+
+               scale_color_manual(name = "Significance",
+                                         breaks = c("Significantly improved", "Not significant", "Significantly reduced"),
+                                         values = c("Significantly improved" = "green4", "Not significant" = "black", "Significantly reduced" = "red2")) +
+              theme_bw()+
+              MS.theme +
+              theme(
+                legend.position = "bottom"
+              )+ pdf.theme +
+              geom_hline(yintercept=0, color="black") + 
+              theme(axis.text.x = element_text(angle = 90, hjust = 1, size=15))
+
+    plot(fig.s4B.pdf)
+```
+
+# 3. Soil fertility
+
+Next, we investigated whether BRI is dependent on soil fertility. 
+
+We defined soil fertility based on the growth performance of control plants (mean dry weight of non-inoculated and non-fertilised plants) and examined its relationship with BRI. 
+
+```{r soil fertility}
+  rownames(results_model_U) = gsub("soil_ID", "", results_model_U$new_field)
+  fertility <- means_and_se_U %>% column_to_rownames("soil_ID") %>% dplyr::select(C)
+  fertility.soil <- merge(results_model_U, fertility, by = 0) %>%   
+                      tibble::column_to_rownames("Row.names")
+```
+
+
+## 3.1 Fig. 2B
+The second finding is that within the non-fertilized samples a negative trend between native soil fertility and BRI was found. This suggested that BRI is larger in soils with a low fertility and smaller in more fertile soils
+
+```{r Fig. 2B}
+  fig.2B <- ggscatter(fertility.soil, x = "C", y = "Estimate", 
+                        #label = rownames(cor.bri.fert), 
+                        cor.coef = TRUE, 
+                        cor.method = "spearman", 
+                        add = "reg.line",
+                        cor.coef.size = 6,
+                        label = rownames(fertility.soil),
+                        font.label = c(16, "plain"),
+                        cor.coef.coord = c(275, 19),
+                        repel = TRUE,
+                        point = FALSE) +
+    xlab("Soil fertility (mg)") + ylab("BRI (%)") + MS.theme
+    
+  ggsave(fig.2B, file = "../output_files/fig_2B.png", width = 5, height = 4, dpi = 300)
+```
+
+
+```{r Fig. 2B for pdf, fig.width = 4, fig.height = 3}
+  fig.2B.pdf <- ggscatter(fertility.soil, x = "C", y = "Estimate", 
+                        #label = rownames(cor.bri.fert), 
+                        cor.coef = TRUE, 
+                        cor.method = "spearman", 
+                        add = "reg.line",
+                        cor.coef.size = 4,
+                        label = rownames(fertility.soil),
+                        font.label = c(12, "plain"),
+                        cor.coef.coord = c(275, 19),
+                        repel = TRUE,
+                        point = FALSE) + pdf.theme +
+    xlab("Soil fertility (mg)") + ylab("BRI (%)")
+    plot(fig.2B.pdf)
+```
+
+
+
+
