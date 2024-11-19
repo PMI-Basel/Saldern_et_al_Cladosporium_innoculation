@@ -156,12 +156,14 @@ We reduced the sets of parameters (removal of co-correlated variables). We exclu
 ```{r figure S5}
   figure.s5 <- ggplot(soil.corr, aes( x = Var1, y = Var2, fill = value)) +
     geom_tile() +
+    geom_text(aes(x = Var1, y = Var2, label = ifelse(abs(value) >= 0.8, round(value, 2), "")), color = "white", size = 4) +
     theme_bw() +
     scale_fill_gradient2(low = "red", mid="white", high="blue") +
     MS.theme +
     theme(
       axis.text.x = element_text(angle = 90,
                                  face = ifelse(soil.corr$Var1 %in% excluded, "plain", "bold")),
+      axis.text.y = element_text(face = c(rep("bold", 2), "plain", rep("bold", 6), "plain", rep("bold", 10), "plain", "bold")),
       axis.title = element_blank(),
       legend.title = element_blank()
     )
@@ -175,12 +177,14 @@ We reduced the sets of parameters (removal of co-correlated variables). We exclu
 ```{r figure S5 for PDF}
   figure.s5.pdf <- ggplot(soil.corr, aes( x = Var1, y = Var2, fill = value)) +
     geom_tile() +
+    geom_text(aes(x = Var1, y = Var2, label = ifelse(abs(value) >= 0.8, round(value, 2), "")), color = "white", size = 3) +
     theme_bw() +
     scale_fill_gradient2(low = "red", mid="white", high="blue") +
     pdf.theme +
     theme(
       axis.text.x = element_text(angle = 90,
                                  face = ifelse(soil.corr$Var1 %in% excluded, "plain", "bold")),
+      axis.text.y = element_text(face = c(rep("bold", 2), "plain", rep("bold", 6), "plain", rep("bold", 10), "plain", "bold")),
       axis.title = element_blank(),
       legend.title = element_blank()
     )

@@ -214,13 +214,13 @@ The abundance of OTU13 ranged from absent to 9.3% relative abundance with presen
   
   # plotting the abundance of C. tenuissimum per field. 
   fig.S6A <- ggplot(otus, aes(x = field, y = OTU13)) +
-    geom_col(color = "#581845", fill = "#581845") +
+    geom_col(color = "#593112", fill = "#593112") +
     xlab("Field") + ylab("OTU13 relative abundance (%)") +
     scale_y_continuous(expand = c(0,0), limits = c(0, 11)) +
     theme_bw() +
     MS.theme +
     theme(
-      axis.text.x = element_text(angle = 45, hjust = 1),
+      axis.text.x = element_text(angle = 90, hjust = 1),
     )
   
     ggsave(file = "../output_files/figure_S6A.png", 
@@ -233,13 +233,13 @@ The abundance of OTU13 ranged from absent to 9.3% relative abundance with presen
 ```{r figure S6A for PDF, fig.height = 4, fig.width = 5, fig.align='center'}
   # plotting the abundance of C. tenuissimum per field. 
   fig.S6A.pdf <- ggplot(otus, aes(x = field, y = OTU13)) +
-    geom_col(color = "#581845", fill = "#581845") +
+    geom_col(color = "#593112", fill = "#593112") +
     xlab("Field") + ylab("OTU13 relative abundance (%)") +
     scale_y_continuous(expand = c(0,0), limits = c(0, 11)) +
     theme_bw() +
     pdf.theme +
     theme(
-      axis.text.x = element_text(angle = 45, hjust = 1),
+      axis.text.x = element_text(angle = 90, hjust = 1),
     )
   
   plot(fig.S6A.pdf)
@@ -265,6 +265,7 @@ OTU13 abundance did not correlate with soil fertility
                       cor.coef.coord = c(800, 8.5),
                       size = 5) +
                       xlab("Soil fertility (mg)") + ylab("OTU13 (%)") +
+                      scale_y_continuous(limits = c(0, 10)) +
                       MS.theme
    
     ggsave(file = "../output_files/figure_S6B.png",
@@ -288,6 +289,7 @@ OTU13 abundance did not correlate with soil fertility
                       cor.coef.coord = c(800, 8.5),
                       size = 3) +
                       xlab("Soil fertility (mg)") + ylab("OTU13 (%)") +
+                      scale_y_continuous(limits = c(0, 10)) +
                       pdf.theme
   plot(fig.S6B)
 ```
@@ -310,7 +312,8 @@ OTU13 abundance did not correlate with BRI
                       point = FALSE,
                       cor.coef.coord = c(-3, 8.5),
                       size = 5) +
-                      xlab("BRI (%)") + 
+                      xlab("BRI (%)") + ylab("OTU13 (%)") +
+                      scale_y_continuous(limits = c(0, 10)) +
                       MS.theme
    
     ggsave(file = "../output_files/figure_S6C.png",
@@ -330,9 +333,10 @@ OTU13 abundance did not correlate with BRI
                       repel = T,
                       font.label = c(14, "plain"),
                       point = FALSE,
-                      cor.coef.coord = c(-10, 6),
+                      cor.coef.coord = c(-10, 8.5),
                       size = 3) +
-                      xlab("BRI (%)") + 
+                      xlab("BRI (%)") + ylab("OTU13 (%)") +
+                      scale_y_continuous(limits = c(0, 10)) +
                       pdf.theme
 
   plot(fig.S6C.pdf)

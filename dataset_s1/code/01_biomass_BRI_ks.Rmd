@@ -29,7 +29,7 @@ knit: (function(inputFile, encoding) {
   library(multcomp)
   
   # styling
-  inoculation_colors <- c(IF = "seagreen4", I = "salmon3")
+  inoculation_colors <- c(IF = "#1F78B4", I = "#FF7F00")
   inoculation_labels <- c(IF = "Fertilised", I = "Non-fertilised")
   
   
@@ -256,7 +256,7 @@ This data is displayed in figure S3.
                   width = 0.2) +
     geom_text(aes(x = treatment, y = mean_total_dry_weight + 250, label = .group), alpha = 0.90, size = 5) +
     scale_y_continuous(limits = c(0, 1650), expand = c(0,0)) +
-    scale_fill_manual(values = c("salmon1", "salmon3", "seagreen3", "seagreen4"))+
+    scale_fill_manual(values = c("#FDBF6F", "#FF7F00", "#004488", "#1F78B4"))+
     theme_bw() +
     theme(
       axis.text.x = element_blank(),
@@ -281,7 +281,7 @@ This data is displayed in figure S3.
                   width = 0.2) +
     geom_text(aes(x = treatment, y = mean_total_dry_weight + 250, label = .group), alpha = 0.90, size = 5) +
     scale_y_continuous(limits = c(0, 1650), expand = c(0,0)) +
-    scale_fill_manual(values = c("salmon1", "salmon3", "seagreen3", "seagreen4"))+
+    scale_fill_manual(values = c("#FDBF6F", "#FF7F00", "#004488", "#1F78B4"))+
     theme_bw() +
     theme(
       axis.text.x = element_blank(),
@@ -499,7 +499,7 @@ For each field, a t-test is applied between fertilised and unfertilised values, 
 
 
 
-## 2.5 Fig. S4A
+## 2.5 Fig. S4A - Unfertilised
 ```{r Fig. S4A}
   pd <- position_dodge(0.5)
   
@@ -514,14 +514,15 @@ For each field, a t-test is applied between fertilised and unfertilised values, 
                                  width=0, size=2, position=pd) +
     scale_color_manual(name = "Significance",
                                  breaks = c("Significantly improved", "Not significant", "Significantly reduced"),
-                                 values = c("Significantly improved" = "green4", "Not significant" = "black", "Significantly reduced" = "red2")) +
+                                 values = c("Significantly improved" = "#1F78B4", "Not significant" = "black", "Significantly reduced" = "#FF7F00")) +
                ylab("BRI (%)")+
-               xlab("Field")+
+               xlab("Unfertilised fields")+
                theme_bw()+
               MS.theme +
               theme(
                 legend.position = "none"
               )+
+              scale_y_continuous(limits = c(-55, 55)) +
               geom_hline(yintercept=0, color="black") + 
               theme(axis.text.x = element_text(angle = 90, hjust = 1, size=15))
     
@@ -542,20 +543,21 @@ For each field, a t-test is applied between fertilised and unfertilised values, 
                                  width=0, size=2, position=pd) +
     scale_color_manual(name = "Significance",
                                  breaks = c("Significantly improved", "Not significant", "Significantly reduced"),
-                                 values = c("Significantly improved" = "green4", "Not significant" = "black", "Significantly reduced" = "red2")) +
+                                 values = c("Significantly improved" = "#1F78B4", "Not significant" = "black", "Significantly reduced" = "#FF7F00")) +
                ylab("BRI (%)")+
-               xlab("Field")+
+               xlab("Unfertilised fields")+
                theme_bw()+
               theme(
                 legend.position = "none"
               )+ pdf.theme +
+              scale_y_continuous(limits = c(-55, 55)) +
               geom_hline(yintercept=0, color="black") + 
               theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 15))
 
     plot(fig.s4A.pdf)
 ```
 
-## 2.6 Fig. S4B
+## 2.6 Fig. S4B - Fertilised
 ```{r Fig. S4B }
   pd <- position_dodge(0.5)
   
@@ -569,15 +571,16 @@ For each field, a t-test is applied between fertilised and unfertilised values, 
                                  color = ifelse(results_model_F$P < 0.05 & results_model_F$Estimate < 0, "Significantly reduced", ifelse(results_model_F$P > 0.05, "Not significant", "Significantly improved"))), 
                                  width=0, size=2, position=pd) +
                ylab("BRI (%)")+
-               xlab("Field")+
+               xlab("Fertilised fields")+
                scale_color_manual(name = "Significance",
                                          breaks = c("Significantly improved", "Not significant", "Significantly reduced"),
-                                         values = c("Significantly improved" = "green4", "Not significant" = "black", "Significantly reduced" = "red2")) +
+                                         values = c("Significantly improved" = "#1F78B4", "Not significant" = "black", "Significantly reduced" = "#FF7F00")) + 
               theme_bw()+
               MS.theme +
               theme(
                 legend.position = "bottom"
               )+ 
+              scale_y_continuous(limits = c(-55, 55)) +
               geom_hline(yintercept=0, color="black") + 
               theme(axis.text.x = element_text(angle = 90, hjust = 1, size=15))
 
@@ -596,15 +599,16 @@ For each field, a t-test is applied between fertilised and unfertilised values, 
                                  color = ifelse(results_model_F$P < 0.05 & results_model_F$Estimate < 0, "Significantly reduced", ifelse(results_model_F$P > 0.05, "Not significant", "Significantly improved"))), 
                                  width=0, size=2, position=pd) +
                ylab("BRI (%)")+
-               xlab("Field")+
+               xlab("Fertilised fields")+
                scale_color_manual(name = "Significance",
                                          breaks = c("Significantly improved", "Not significant", "Significantly reduced"),
-                                         values = c("Significantly improved" = "green4", "Not significant" = "black", "Significantly reduced" = "red2")) +
+                                         values = c("Significantly improved" = "#1F78B4", "Not significant" = "black", "Significantly reduced" = "#FF7F00")) +
               theme_bw()+
               MS.theme +
               theme(
                 legend.position = "bottom"
               )+ pdf.theme +
+              scale_y_continuous(limits = c(-55, 55)) +
               geom_hline(yintercept=0, color="black") + 
               theme(axis.text.x = element_text(angle = 90, hjust = 1, size=15))
 
